@@ -4,6 +4,8 @@ const { createScopedThreejs } = require('threejs-miniprogram');
 const { registerGLTFLoader } = require('../../utils/gltf-loader.js');
 // 相机每帧图像作为threejs场景的背景图
 const webglBusiness = require('./webglBusiness.js')
+// marker配置
+const { markerConfigs } = require('./markerConfig.js')
 // 近截面
 const NEAR = 0.001
 // 远截面
@@ -26,11 +28,10 @@ var mixers = [];
 // 设备像素比例
 var devicePixelRatio;
 var screenWidth, screenHeight;
-var markerId;
-// 模型的默认缩放大小
-const modelScale = 0.1;
-// 平面遮罩层的默认缩放大小
-const planeScale = 0.28
+// marker ID列表（支持多个marker）
+var markerIds = [];
+// 存储所有marker对应的模型和配置
+var markerModels = {};
 
 function initWorldTrack() {
     if (!session) {
@@ -44,16 +45,64 @@ function initWorldTrack() {
     }
 
     session.on('addAnchors', anchors => {
-        // 发现新的平面
+        console.log('addAnchors', anchors.length, '个marker被识别')
         wx.hideLoading();
+        
+        // 显示识别到的marker对应的模型
+        anchors.forEach(anchor => {
+            const markerId = anchor.id
+            console.log('addAnchors 识别到marker:', markerId)
+            
+            if (markerModels[markerId] && markerModels[markerId].model) {
+                const model = markerModels[markerId].model
+                model.visible = true
+                console.log('addAnchors 显示模型:', markerId)
+            }
+        })
     })
 
     session.on('updateAnchors', anchors => {
-        // 更新平面
+        console.log('updateAnchors', anchors.length, '个marker更新')
+        
+        // 更新识别到的marker对应的模型位置
+        anchors.forEach(anchor => {
+            const markerId = anchor.id
+            
+            if (markerModels[markerId] && markerModels[markerId].model) {
+                const model = markerModels[markerId].model
+                model.visible = true
+                
+                // 更新模型的位置和旋转，但保持原始缩放比例
+                model.matrix.fromArray(anchor.transform)
+                const position = new THREE.Vector3()
+                const quaternion = new THREE.Quaternion()
+                model.matrix.decompose(position, quaternion, model.scale)
+                model.position.copy(position)
+                model.quaternion.copy(quaternion)
+                // 恢复原始缩放比例
+                if (markerModels[markerId].originalScale) {
+                    model.scale.set(
+                        markerModels[markerId].originalScale,
+                        markerModels[markerId].originalScale,
+                        markerModels[markerId].originalScale
+                    )
+                }
+            }
+        })
     })
 
     session.on('removeAnchors', anchors => {
-        // 当平面跟踪丢失时
+        console.log('removeAnchors', anchors.length, '个marker丢失')
+        
+        // 隐藏丢失的marker对应的模型
+        anchors.forEach(anchor => {
+            const markerId = anchor.id
+            console.log('removeAnchors 隐藏模型:', markerId)
+            
+            if (markerModels[markerId] && markerModels[markerId].model) {
+                markerModels[markerId].model.visible = false
+            }
+        })
     })
 
     wx.showLoading({
@@ -61,29 +110,138 @@ function initWorldTrack() {
     });
 
     // 在session.start()成功后，session.addMarker()才会起作用。
-    addMarker()
+    addMarkers()
 }
 
-function addMarker() {
-    if (markerId) {
-        return
-    }
-    // 如果文件路径包含新文件夹，则需要先创建文件夹。
-    const filePath = `${wx.env.USER_DATA_PATH}/image_pattern_1.jpg`
-    wx.downloadFile({
-        url: 'https://m.sanyue.red/wechat/imgs/image_pattern_1.jpg',
-        filePath,
-        success: () => {
-            // session.addMarker()需要等待session初始化完成，才能成功调用。
-            markerId = session.addMarker(filePath)
-            console.log('addMarker', filePath)
+// 添加所有marker
+function addMarkers() {
+    let completedCount = 0
+    const totalMarkers = markerConfigs.length
+    
+    markerConfigs.forEach((config, index) => {
+        // 从原始URL中提取文件扩展名
+        let fileExtension = '.jpg'
+        const urlParts = config.imageUrl.split('.')
+        if (urlParts.length > 1) {
+            const ext = urlParts[urlParts.length - 1].toLowerCase()
+            if (ext === 'png' || ext === 'jpg' || ext === 'jpeg') {
+                fileExtension = '.' + ext
+            }
         }
+        
+        // 如果文件路径包含新文件夹，则需要先创建文件夹。
+        const fileName = `image_pattern_${index + 1}${fileExtension}`
+        const filePath = `${wx.env.USER_DATA_PATH}/${fileName}`
+        
+        console.log(`开始下载marker ${config.name}:`, config.imageUrl)
+        
+        wx.downloadFile({
+            url: config.imageUrl,
+            filePath,
+            success: (res) => {
+                console.log(`下载成功 ${config.name}:`, res.tempFilePath || filePath)
+                
+                // session.addMarker()需要等待session初始化完成，才能成功调用。
+                try {
+                    const markerId = session.addMarker(filePath)
+                    console.log('addMarker成功', config.name, 'filePath:', filePath, 'markerId:', markerId)
+                    
+                    if (!markerId || markerId === -1) {
+                        console.error('addMarker失败，返回的markerId无效:', markerId)
+                        wx.showToast({
+                            title: `${config.name} marker添加失败`,
+                            icon: 'none',
+                            duration: 2000
+                        })
+                    } else {
+                        // 保存marker ID
+                        markerIds.push(markerId)
+                        
+                        // 为每个marker加载对应的模型
+                        loadModelForMarker(config, markerId)
+                    }
+                } catch (error) {
+                    console.error('addMarker异常', config.name, error)
+                    wx.showToast({
+                        title: `${config.name} marker添加异常`,
+                        icon: 'none',
+                        duration: 2000
+                    })
+                }
+                
+                completedCount++
+                if (completedCount >= totalMarkers) {
+                    console.log('所有marker下载完成，共', totalMarkers, '个')
+                    wx.hideLoading()
+                }
+            },
+            fail: (err) => {
+                console.error(`下载失败 ${config.name}:`, err)
+                wx.showToast({
+                    title: `下载${config.name}图片失败`,
+                    icon: 'none',
+                    duration: 3000
+                })
+                
+                completedCount++
+                if (completedCount >= totalMarkers) {
+                    console.log('所有marker下载完成，共', totalMarkers, '个')
+                    wx.hideLoading()
+                }
+            }
+        })
     })
 }
 
-// 添加平面
-function addPlane(size) {
-    const geometry1 = new THREE.PlaneGeometry(size.width, size.height);
+// 为特定marker加载模型
+function loadModelForMarker(config, markerId) {
+    var loader = new THREE.GLTFLoader();
+    loader.load(config.modelUrl,
+        function (gltf) {
+            console.log('loadModelForMarker', config.name, 'success');
+            
+            var model = gltf.scene;
+            // 应用配置的缩放
+            model.scale.set(config.modelScale, config.modelScale, config.modelScale)
+            
+            // 应用位置偏移
+            if (config.position) {
+                model.position.set(config.position.x, config.position.y, config.position.z)
+            }
+            
+            // 应用旋转
+            if (config.rotation) {
+                model.rotation.set(config.rotation.x, config.rotation.y, config.rotation.z)
+            }
+            
+            // 初始隐藏模型，只有识别到marker时才显示
+            model.visible = false
+            
+            // 添加到场景
+            scene.add(model)
+            
+            // 存储模型信息
+            markerModels[markerId] = {
+                model: model,
+                config: config,
+                animations: gltf.animations,
+                originalScale: config.modelScale
+            }
+            
+            // 如果有动画，创建动画
+            if (config.animationName && gltf.animations) {
+                createAnimationForMarker(model, gltf.animations, config.animationName, markerId)
+            }
+        },
+        null,
+        function (error) {
+            console.log('loadModelForMarker', config.name, error);
+        });
+}
+
+// 添加平面（用于显示识别到的marker位置）
+function addPlane(config) {
+    const geometry1 = new THREE.PlaneGeometry(config.planeSize.width, config.planeSize.height);
     const material1 = new THREE.MeshBasicMaterial({
         color: 'white',
         side: THREE.DoubleSide,
@@ -92,15 +250,16 @@ function addPlane(size) {
     });
     const plane1 = new THREE.Mesh(geometry1, material1);
     // 缩放
-    plane1.scale.set(planeScale, planeScale, planeScale)
+    plane1.scale.set(config.planeScale, config.planeScale, config.planeScale)
     // 旋转90度
     plane1.rotateX(-Math.PI / 2)
-    mainPlane = plane1;
-    scene.add(mainPlane);
+    // 初始隐藏，等到识别到marker时再显示
+    plane1.visible = false
+    return plane1;
 }
 
 
-// 加载3D模型
+// 加载3D模型（保留向后兼容，但推荐使用loadModelForMarker）
 function loadModel(modelUrl, callback) {
     var loader = new THREE.GLTFLoader();
     wx.showLoading({
@@ -111,8 +270,9 @@ function loadModel(modelUrl, callback) {
             console.log('loadModel', 'success');
             wx.hideLoading();
             var model = gltf.scene;
-            // 缩放
-            model.scale.set(modelScale, modelScale, modelScale)
+            // 默认缩放
+            const defaultScale = 0.1;
+            model.scale.set(defaultScale, defaultScale, defaultScale)
             mainModel = model;
             scene.add(mainModel)
 
@@ -131,6 +291,29 @@ function loadModel(modelUrl, callback) {
                 duration: 3000,
             });
         });
+}
+
+// 为特定marker创建动画
+function createAnimationForMarker(model, animations, clipName, markerId) {
+    if (!model || !animations) {
+        return
+    }
+
+    // 动画混合器
+    const mixer = new THREE.AnimationMixer(model)
+    for (let i = 0; i < animations.length; i++) {
+        const clip = animations[i]
+        if (clip.name === clipName) {
+            const action = mixer.clipAction(clip)
+            action.play()
+        }
+    }
+
+    // 将mixer存储到markerModels中
+    if (markerModels[markerId]) {
+        markerModels[markerId].mixer = mixer
+    }
+    mixers.push(mixer)
 }
 
 // 加载3D模型的动画
@@ -221,9 +404,6 @@ function initTHREE() {
 
     // 动画需要的
     clock = new THREE.Clock()
-
-    // 添加平面，应该与识别图像的宽度和高度比例相同
-    addPlane({ width: 3.75, height: 2.06 })
 }
 
 
@@ -235,13 +415,14 @@ function calcCanvasSize() {
     devicePixelRatio = info.pixelRatio
     screenWidth = info.windowWidth
     screenHeight = info.windowHeight
+    console.log('calcCanvasSize', 'screenWidth:', screenWidth, 'screenHeight:', screenHeight, 'devicePixelRatio:', devicePixelRatio)
     /* 官方示例的代码
     canvas.width = width * devicePixelRatio / 2
     canvas.height = height * devicePixelRatio / 2
     */
     renderer.setSize(screenWidth, screenHeight);
     renderer.setPixelRatio(devicePixelRatio);
-
+    console.log('calcCanvasSize', 'canvas.width:', canvas.width, 'canvas.height:', canvas.height)
 }
 
 // 启动AR会话
@@ -297,12 +478,14 @@ function initEnvironment(canvasDom, callback) {
         webglBusiness.initGL(renderer)
         // 每帧渲染
         const onFrame = function (timestamp) {
+            console.log('onFrame', timestamp)
             if (!session) {
                 return
             }
 
             // 从AR会话获取每帧图像
             const frame = session.getVKFrame(canvas.width, canvas.height)
+            console.log('getVKFrame', frame ? 'success' : 'null')
             if (frame) {
                 // threejs渲染过程
                 render(frame)
@@ -328,6 +511,19 @@ function dispose() {
     }
     if (mainModel) {
         mainModel = null
+    }
+    
+    // 清理所有marker模型
+    if (markerModels) {
+        Object.values(markerModels).forEach(markerData => {
+            if (markerData.model) {
+                markerData.model = null
+            }
+            if (markerData.mixer) {
+                markerData.mixer.uncacheRoot(markerData.mixer.getRoot())
+            }
+        })
+        markerModels = {}
     }
 
     if (mixers) {
@@ -362,8 +558,8 @@ function dispose() {
         screenWidth = null
     }
 
-    if (markerId) {
-        markerId = null
+    if (markerIds) {
+        markerIds = []
     }
 
     webglBusiness.dispose()
@@ -377,4 +573,6 @@ module.exports = {
     createAnimation,
     updateAnimation,
     dispose,
+    loadModelForMarker,
+    createAnimationForMarker,
 }

@@ -102,9 +102,12 @@ function initGL(_renderer) {
 
 function renderGL(frame) {
   const gl = renderer.getContext()
+  console.log('renderGL', 'gl:', !!gl)
   // gl.disable(gl.DEPTH_TEST)
   const { yTexture, uvTexture } = frame.getCameraTexture(gl, 'yuv')
+  console.log('renderGL', 'yTexture:', !!yTexture, 'uvTexture:', !!uvTexture)
   const displayTransform = frame.getDisplayTransform()
+  console.log('renderGL', 'displayTransform:', displayTransform)
   if (yTexture && uvTexture) {
     const currentProgram = gl.getParameter(gl.CURRENT_PROGRAM)
     const currentActiveTexture = gl.getParameter(gl.ACTIVE_TEXTURE)
@@ -133,6 +136,8 @@ function renderGL(frame) {
     gl.useProgram(currentProgram)
     gl.activeTexture(currentActiveTexture)
     _vao_ext.bindVertexArrayOES(currentVAO)
+  } else {
+    console.log('renderGL', 'yTexture或uvTexture为空，无法渲染相机画面')
   }
 }
 

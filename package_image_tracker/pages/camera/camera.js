@@ -1,17 +1,17 @@
 const cameraBusiness = require('../../utils/cameraBusiness.js')
-// 画布id
-const canvasId = 'canvas1';
-// 机器人模型，带动画。
-const robotUrl = 'https://m.sanyue.red/demo/gltf/robot.glb';
+const { markerConfigs } = require('../../utils/markerConfig.js')
 
 Page({
   data: {
     menuButtonTop: 32,
     menuButtonHeight: 33,
-    patternImageUrl: 'https://m.sanyue.red/wechat/imgs/image_pattern_1.jpg',
+    patternImageUrl: markerConfigs[0]?.imageUrl || ''
   },
   onReady() {
     console.log('onReady')
+    // 画布id
+    const canvasId = 'canvas1'
+    
     // 获取小程序右上角胶囊按钮的坐标，用作自定义导航栏。
     const menuButton = wx.getMenuButtonBoundingClientRect()
 
@@ -22,6 +22,36 @@ Page({
       menuButtonHeight: menuButton.height,
     })
 
+    // 先请求相机权限
+    wx.authorize({
+      scope: 'scope.camera',
+      success: () => {
+        console.log('相机权限授权成功')
+        this.initAR(canvasId)
+      },
+      fail: () => {
+        console.log('相机权限授权失败')
+        wx.showModal({
+          title: '提示',
+          content: '需要相机权限才能使用AR功能',
+          showCancel: false,
+          success: (res) => {
+            if (res.confirm) {
+              wx.openSetting({
+                success: (settingRes) => {
+                  if (settingRes.authSetting['scope.camera']) {
+                    this.initAR(canvasId)
+                  }
+                }
+              })
+            }
+          }
+        })
+      }
+    })
+  },
+
+  initAR(canvasId) {
     // 获取画布组件
     wx.createSelectorQuery()
       .select('#' + canvasId)
@@ -31,16 +61,10 @@ Page({
         const canvas1 = res[0].node
         // 启动AR会话
         cameraBusiness.initEnvironment(canvas1, function () {
-          // 创建AR的坐标系
+          // 创建AR的坐标系并加载所有marker和模型
           cameraBusiness.initWorldTrack()
-          // 加载3D模型
-          cameraBusiness.loadModel(robotUrl, function (model, animations) {
-            // 加载3D模型的动画
-            cameraBusiness.createAnimation(model, animations, 'Dance')
-          })
         })
       })
-
   },
   onUnload() {
     console.log('onUnload')
